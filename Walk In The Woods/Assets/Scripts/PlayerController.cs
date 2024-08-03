@@ -12,7 +12,6 @@ namespace PlayerCharacter.Mechanics
         public Vector3 moveDirection;
 
         public float maxSpeed = 5f;
-
         [Range(0, 5)]
         public float currentSpeed = 0f;
         public float accelerationTime = 2f;
@@ -21,11 +20,19 @@ namespace PlayerCharacter.Mechanics
         private float speedVelocity;
 
         [Header("Jumping Variables")]
-        // Ground Control
         public Transform groundAnchor;
         public LayerMask groundCheckMask;
 
+        public LayerMask verticalChange;
+
+        public float maxSlopeAngle = 45f;
         public float jumpForce = 2;
+
+        public bool ONSLOPE;
+        public bool onGround;
+
+        public float ledgeDetectionDistance = 0.5f;
+        public float ledgeCheckHeight = 1.0f;
 
         private void Awake()
         {
@@ -34,9 +41,8 @@ namespace PlayerCharacter.Mechanics
 
         private void OnEnable()
         {
-            inputs.Enable();  // Enable the input actions
+            inputs.Enable();
 
-            // Subscribe methods to input action events
             inputs.PlayerWalk.Move.performed += OnMove;
             inputs.PlayerWalk.Move.canceled += OnMoveCancel;
             inputs.PlayerWalk.Jump.performed += OnJump;
@@ -44,12 +50,11 @@ namespace PlayerCharacter.Mechanics
 
         private void OnDisable()
         {
-            inputs.Disable();  // Disable the input actions
+            inputs.Disable();
 
-            // Unsubscribe methods from input action events
             inputs.PlayerWalk.Move.performed -= OnMove;
             inputs.PlayerWalk.Move.canceled -= OnMoveCancel;
-            inputs.PlayerWalk.Jump.performed += OnJump;
+            inputs.PlayerWalk.Jump.performed -= OnJump;
         }
 
         #region Input Handlers
@@ -57,7 +62,6 @@ namespace PlayerCharacter.Mechanics
         {
             Vector3 inputVector = context.ReadValue<Vector3>();
             moveDirection = new Vector3(inputVector.x, 0, inputVector.z);
-            Debug.Log($"Move input: {moveDirection}");
         }
 
         private void OnMoveCancel(InputAction.CallbackContext context)
@@ -67,32 +71,25 @@ namespace PlayerCharacter.Mechanics
 
         private void OnJump(InputAction.CallbackContext context)
         {
-            if(isGrounded())
+            if (isGrounded())
             {
                 rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
             }
         }
         #endregion
 
-        // Start is called before the first frame update
         void Start()
         {
-            // Make Rigidbody and set up
             rb = gameObject.AddComponent<Rigidbody>();
             rb.freezeRotation = true;
-
-            // Find Components
             groundAnchor = gameObject.transform.GetChild(1).transform;
-
-            //Debug.Log(inputs);
         }
 
         private void Update()
         {
-            Debug.Log(isGrounded());
+
         }
 
-        // Update is called once per frame
         void FixedUpdate()
         {
             MovePlayer();
@@ -100,6 +97,7 @@ namespace PlayerCharacter.Mechanics
 
         void MovePlayer()
         {
+            // Normal ground movement
             if (moveDirection != Vector3.zero)
             {
                 // Gradually increase the current speed towards the max speed
@@ -111,14 +109,100 @@ namespace PlayerCharacter.Mechanics
             }
             // Handle Movement of the player
             rb.velocity = new Vector3(moveDirection.x * currentSpeed, rb.velocity.y, moveDirection.z * currentSpeed);
+
+            // Adapted movement
+            RaycastHit hit;
+            float rayLength = 2.0f; // Adjust as needed
+
+            Debug.DrawRay(transform.position, Vector3.down * rayLength, Color.green);
+
+            if (Physics.Raycast(transform.position, Vector3.down, out hit, rayLength, verticalChange))
+            {
+                Vector3 groundNormal = hit.normal;
+                float slopeAngle = Vector3.Angle(Vector3.up, groundNormal);
+
+                Debug.Log($"Slope Angle: {slopeAngle}, Ground Normal: {groundNormal}");
+
+                if (slopeAngle <= maxSlopeAngle)
+                {
+                    // Project moveDirection onto the plane defined by groundNormal
+                    Vector3 slopeMoveDirection = Vector3.ProjectOnPlane(moveDirection, groundNormal).normalized;
+
+                    // Calculate target velocity
+                    Vector3 targetVelocity = new Vector3(slopeMoveDirection.x * currentSpeed, rb.velocity.y, slopeMoveDirection.z * currentSpeed);
+
+                    if (moveDirection != Vector3.zero)
+                    {
+                        // Smooth acceleration
+                        currentSpeed = Mathf.SmoothDamp(currentSpeed, maxSpeed, ref speedVelocity, accelerationTime);
+                    }
+                    else
+                    {
+                        // Smooth deceleration
+                        currentSpeed = 0;
+                        rb.velocity = Vector3.zero;
+                    }
+
+                    // Apply horizontal velocity
+                    rb.velocity = new Vector3(slopeMoveDirection.x * currentSpeed, rb.velocity.y, slopeMoveDirection.z * currentSpeed);
+
+                    // Prevent sliding on steep slopes
+                    if (ONSLOPE == true & moveDirection == Vector3.zero)
+                    {
+                        rb.useGravity = false;
+                    }
+                    else
+                        rb.useGravity = true;
+                    ONSLOPE = true;
+                }
+                else
+                {
+                    // Handle steep slopes
+                    rb.velocity = new Vector3(0, rb.velocity.y, 0);
+                    ONSLOPE = false;
+                }
+            }
+            else
+            {
+                // Check for ledges
+                if (DetectLedge())
+                {
+                    Vector3 slopeMoveDirection = Vector3.ProjectOnPlane(moveDirection, Vector3.up).normalized;
+                    rb.velocity = new Vector3(slopeMoveDirection.x * currentSpeed, rb.velocity.y, slopeMoveDirection.z * currentSpeed);
+                }
+                else
+                {
+                    // No ground detected, stop horizontal movement and handle gravity
+                    rb.velocity = new Vector3(0, rb.velocity.y, 0);
+                    ONSLOPE = false;
+                }
+            }
         }
 
         bool isGrounded()
         {
             RaycastHit hit;
-            // Draaws ray to be seen in scene where it'll draw down 0.025f
-            Debug.DrawRay(groundAnchor.position, Vector3.down * 0.025f, Color.red);
-            return Physics.Raycast(groundAnchor.position, Vector3.down, out hit, 0.025f, groundCheckMask);  // returns check if it hits a collider with layer set
+            float sphereRadius = 0.5f;
+            float sphereCastDistance = 1.0f;
+            Vector3 sphereOrigin = transform.position + Vector3.up * sphereRadius;
+
+            Debug.DrawRay(sphereOrigin, Vector3.down * (sphereRadius + sphereCastDistance), Color.yellow);
+
+            return Physics.SphereCast(sphereOrigin, sphereRadius, Vector3.down, out hit, sphereRadius + sphereCastDistance, groundCheckMask);
+        }
+
+        bool DetectLedge()
+        {
+            RaycastHit hit;
+            Vector3 forwardCheckPosition = transform.position + transform.forward * ledgeDetectionDistance;
+
+            if (Physics.Raycast(forwardCheckPosition, Vector3.down, out hit, ledgeCheckHeight, groundCheckMask))
+            {
+                Debug.Log("Ledge detected.");
+                return true;
+            }
+
+            return false;
         }
     }
 }
